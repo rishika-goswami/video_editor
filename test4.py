@@ -1,106 +1,69 @@
 import cv2
-import numpy as np
+from scenedetect import detect, ContentDetector
+from moviepy.editor import VideoFileClip, concatenate_videoclips
 
-def apply_fade_transition(clip, fade_type, duration, fps):
-    """
-    Apply fade-in or fade-out effect to the clip.
-    """
-    num_frames = int(fps * duration)
-    if fade_type == 'fadein':
-        for i in range(num_frames):
-            alpha = i / num_frames
-            clip[i] = cv2.convertScaleAbs(clip[i], alpha=alpha)
-    elif fade_type == 'fadeout':
-        for i in range(num_frames):
-            alpha = (num_frames - i) / num_frames
-            clip[-i-1] = cv2.convertScaleAbs(clip[-i-1], alpha=alpha)
-    return clip
+def detect_scenes(video_path):
+    scene_list = detect(video_path, ContentDetector())
+    return scene_list
 
-def insert_clip_with_transitions(main_video_path, clip_path, timestamp, intro_transition, outro_transition, transition_duration):
-    # Load the main video and the small clip
-    main_video = cv2.VideoCapture(main_video_path)
-    small_clip = cv2.VideoCapture(clip_path)
+def get_video_duration(video_path):
+    clip = VideoFileClip(video_path)
+    duration = clip.duration
+    clip.close()
+    return duration
 
-    # Ensure that the video files are opened correctly
-    if not main_video.isOpened():
-        raise ValueError(f"Error opening main video: {main_video_path}")
-    if not small_clip.isOpened():
-        raise ValueError(f"Error opening small video clip: {clip_path}")
+def get_seconds(time_value):
+    return time_value.get_seconds() if hasattr(time_value, 'get_seconds') else time_value
 
-    # Get properties of the main video
-    fps = main_video.get(cv2.CAP_PROP_FPS)
-    frame_width = int(main_video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(main_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    
-    # Create output video writer
-    output_path = "output_video.mp4"
-    output = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+def insert_clip(main_video_path, clip_path, timestamp, output_path):
+    scenes = detect_scenes(main_video_path)
+    print(f"Detected {len(scenes)} scenes.")
 
-    # Read frames from the main video until the timestamp
-    timestamp_frame = int(fps * timestamp)
-    for frame_idx in range(timestamp_frame):
-        ret, frame = main_video.read()
-        if not ret:
+    if not scenes:
+        print("No scenes detected. Using entire video as one scene.")
+        duration = get_video_duration(main_video_path)
+        scenes = [(0, duration)]
+
+    # Find the scene that contains the timestamp
+    target_scene = None
+    for i, scene in enumerate(scenes):
+        start, end = get_seconds(scene[0]), get_seconds(scene[1])
+        if start <= timestamp < end:
+            target_scene = (i, (start, end))
             break
-        output.write(frame)
 
-    # Apply intro transition (fade-in)
-    small_clip_frames = []
-    while True:
-        ret, frame = small_clip.read()
-        if not ret:
-            break
-        small_clip_frames.append(frame)
+    if target_scene is None:
+        print(f"No scene found at timestamp {timestamp}. Using nearest scene.")
+        nearest_scene = min(enumerate(scenes), key=lambda x: min(abs(timestamp - get_seconds(x[1][0])), 
+                                                                 abs(timestamp - get_seconds(x[1][1]))))
+        target_scene = nearest_scene
 
-    # Check if the small clip contains any frames
-    if len(small_clip_frames) == 0:
-        raise ValueError(f"Error: Small clip '{clip_path}' contains no frames or could not be read.")
+    scene_index, (start, end) = target_scene
+    print(f"Inserting clip at scene {scene_index}, between {start:.2f}s and {end:.2f}s")
 
-    # Resize the small clip if necessary
-    if (frame_width, frame_height) != (small_clip_frames[0].shape[1], small_clip_frames[0].shape[0]):
-        small_clip_frames = [cv2.resize(frame, (frame_width, frame_height)) for frame in small_clip_frames]
+    # Load videos with audio
+    main_video = VideoFileClip(main_video_path)
+    clip_to_insert = VideoFileClip(clip_path)
 
-    # Apply transitions to the small clip
-    if intro_transition:
-        small_clip_frames = apply_fade_transition(small_clip_frames, intro_transition, transition_duration, fps)
-    if outro_transition:
-        small_clip_frames = apply_fade_transition(small_clip_frames, outro_transition, transition_duration, fps)
+    # Split the main video
+    part1 = main_video.subclip(0, timestamp)
+    part2 = main_video.subclip(timestamp)
 
-    # Write the modified small clip to the output video
-    for frame in small_clip_frames:
-        output.write(frame)
+    # Concatenate videos
+    final_video = concatenate_videoclips([part1, clip_to_insert, part2])
 
-    # Continue writing the remaining main video after the timestamp
-    while True:
-        ret, frame = main_video.read()
-        if not ret:
-            break
-        output.write(frame)
+    # Write the result
+    final_video.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
-    # Release everything
-    main_video.release()
-    small_clip.release()
-    output.release()
+    # Close all clips
+    main_video.close()
+    clip_to_insert.close()
+    final_video.close()
 
-    return output_path
+    print(f"Video edited and saved as {output_path}")
 
-def main():
-    # Inputs
-    main_video_path = "C:/Rishika_PC/Projects/Video Editor/SampleIP.mp4"
-    clip_path = "C:/Rishika_PC/Projects/Video Editor/sample_effect.mp4"
-    timestamp = 5.0
-    intro_transition = 'fadein'
-    outro_transition = 'fadeout'
-    transition_duration = 5.0
-    
-    # Process the video and save the output
-    try:
-        output_path = insert_clip_with_transitions(main_video_path, clip_path, timestamp, intro_transition, outro_transition, transition_duration)
-        print(f"Video saved as {output_path}")
-    except Exception as e:
-        print(f"Error: {e}")
-
-if __name__ == "__main__":
-    main()
-
+# Example usage
+insert_clip("C:/Rishika_PC/Projects/Video Editor/SampleIP.mp4", 
+            "C:/Rishika_PC/Projects/Video Editor/sample_effect.mp4", 
+            10, 
+            "output_video.mp4")
